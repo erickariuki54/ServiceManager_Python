@@ -18,6 +18,9 @@ class ServiceManagerApp(ctk.CTk):
         self.geometry("540x460")
         ctk.set_appearance_mode("system")
 
+        self.running = True  # Used to stop background loops safely
+        self.refresh_job = None
+
         self.services = []
         self.service_widgets = {}
 
@@ -77,8 +80,6 @@ class ServiceManagerApp(ctk.CTk):
         try:
             subprocess.run(["sc", action, name], check=True, capture_output=True)
         except subprocess.CalledProcessError:
-            # Fix: wrap the full command inside a single string
-            cmd = f'sc {action} "{name}"'
             subprocess.run([
                 "powershell", "-Command",
                 f'Start-Process -FilePath "sc.exe" -ArgumentList \'{action} "{name}"\' -Verb RunAs'
@@ -130,6 +131,8 @@ class ServiceManagerApp(ctk.CTk):
 
     def handle_action(self, service, action):
         def run():
+            if not self.running:
+                return
             if action == "restart":
                 self.control_service(service, "stop")
                 time.sleep(1)
@@ -147,6 +150,8 @@ class ServiceManagerApp(ctk.CTk):
 
     def refresh_services(self):
         def safe_update():
+            if not self.running or not self.winfo_exists():
+                return
             for service in self.services:
                 status = self.get_service_status(service)
                 widgets = self.service_widgets.get(service, {})
@@ -158,11 +163,11 @@ class ServiceManagerApp(ctk.CTk):
                         widgets["start_btn"].configure(state="disabled" if status == "Running" else "normal")
                     except:
                         pass
-        self.after(0, safe_update)
+        self.refresh_job = self.after(0, safe_update)
 
     def auto_refresh(self):
         def loop():
-            while True:
+            while self.running:
                 self.refresh_services()
                 time.sleep(5)
         threading.Thread(target=loop, daemon=True).start()
@@ -187,6 +192,12 @@ class ServiceManagerApp(ctk.CTk):
         self.withdraw()
 
     def exit_app(self, icon=None, item=None):
+        self.running = False
+        if self.refresh_job:
+            try:
+                self.after_cancel(self.refresh_job)
+            except:
+                pass
         if hasattr(self, "tray_icon"):
             self.tray_icon.stop()
         self.destroy()
