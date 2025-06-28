@@ -68,7 +68,10 @@ class ServiceManagerApp(ctk.CTk):
         try:
             subprocess.run(["sc", action, name], check=True, capture_output=True)
         except subprocess.CalledProcessError:
-            subprocess.run(["powershell", "Start-Process", "sc", "-ArgumentList", f'{action} \"{name}\"', "-Verb", "RunAs"])
+            # Properly quote the whole argument string passed to sc
+            cmd = f'Start-Process -FilePath sc.exe -ArgumentList \'{action} "{name}"\' -Verb RunAs'
+            subprocess.run(["powershell", "-Command", cmd])
+
 
     def update_service_list(self):
         for widget in self.services_frame.winfo_children():
