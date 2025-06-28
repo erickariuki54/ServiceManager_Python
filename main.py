@@ -84,18 +84,32 @@ class ServiceManagerApp(ctk.CTk):
             name = ctk.CTkLabel(row, text=service, width=100, anchor="w")
             name.pack(side="left")
 
-            status = ctk.CTkLabel(row, text=self.get_service_status(service), width=80)
+            status_text = self.get_service_status(service)
+            status = ctk.CTkLabel(row, text=status_text, width=80)
             status.pack(side="left", padx=5)
             self.service_widgets[service] = status
 
-            for action in ["start", "stop", "restart"]:
-                btn = ctk.CTkButton(row, text=action.capitalize(), width=60,
-                                     command=lambda s=service, a=action: self.handle_action(s, a))
-                btn.pack(side="left", padx=2)
+            # Create buttons and disable based on status
+            start_btn = ctk.CTkButton(row, text="Start", width=60,
+                                      command=lambda s=service: self.handle_action(s, "start"))
+            stop_btn = ctk.CTkButton(row, text="Stop", width=60,
+                                     command=lambda s=service: self.handle_action(s, "stop"))
+            restart_btn = ctk.CTkButton(row, text="Restart", width=60,
+                                        command=lambda s=service: self.handle_action(s, "restart"))
+
+            if status_text == "Running":
+                start_btn.configure(state="disabled")
+            elif status_text == "Stopped":
+                stop_btn.configure(state="disabled")
+
+            start_btn.pack(side="left", padx=2)
+            stop_btn.pack(side="left", padx=2)
+            restart_btn.pack(side="left", padx=2)
 
             del_btn = ctk.CTkButton(row, text="❌", width=30, fg_color="red",
                                     command=lambda s=service: self.remove_service(s))
             del_btn.pack(side="left")
+
 
     def handle_action(self, service, action):
         if action == "restart":
@@ -112,10 +126,21 @@ class ServiceManagerApp(ctk.CTk):
         self.update_service_list()
 
     def refresh_services(self):
-        for service in self.services:
-            status = self.get_service_status(service)
-            if service in self.service_widgets:
-                self.service_widgets[service].configure(text=status)
+        for child in self.services_frame.winfo_children():
+            for widget in child.winfo_children():
+                if isinstance(widget, ctk.CTkLabel) and widget.cget("width") == 80:
+                    service = widget.master.winfo_children()[0].cget("text")
+                    new_status = self.get_service_status(service)
+                    widget.configure(text=new_status)
+    
+                    # Enable/disable buttons
+                    for btn in widget.master.winfo_children():
+                        if isinstance(btn, ctk.CTkButton):
+                            if btn.cget("text") == "Start":
+                                btn.configure(state="disabled" if new_status == "Running" else "normal")
+                            elif btn.cget("text") == "Stop":
+                                btn.configure(state="disabled" if new_status == "Stopped" else "normal")
+
 
     def auto_refresh(self):
         def loop():
