@@ -10,6 +10,7 @@ from PIL import Image, ImageDraw
 
 SERVICES_FILE = os.path.join(os.getenv("LOCALAPPDATA"), "ServiceManager", "services.json")
 
+
 class ServiceManagerApp(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -24,10 +25,10 @@ class ServiceManagerApp(ctk.CTk):
         self.load_services()
         self.refresh_services()
         self.auto_refresh()
-
-        # Set up tray behavior
-        self.protocol("WM_DELETE_WINDOW", self.hide_window)
         self.create_tray_icon()
+
+        # Hide instead of close
+        self.protocol("WM_DELETE_WINDOW", self.hide_window)
 
     def create_widgets(self):
         self.entry = ctk.CTkEntry(self, placeholder_text="Enter service name")
@@ -76,10 +77,11 @@ class ServiceManagerApp(ctk.CTk):
         try:
             subprocess.run(["sc", action, name], check=True, capture_output=True)
         except subprocess.CalledProcessError:
+            # Fix: wrap the full command inside a single string
+            cmd = f'sc {action} "{name}"'
             subprocess.run([
-                "powershell", "Start-Process", "sc",
-                "-ArgumentList", f'{action} "{name}"',
-                "-Verb", "RunAs"
+                "powershell", "-Command",
+                f'Start-Process -FilePath "sc.exe" -ArgumentList \'{action} "{name}"\' -Verb RunAs'
             ])
 
     def update_service_list(self):
@@ -90,7 +92,6 @@ class ServiceManagerApp(ctk.CTk):
 
         for service in self.services:
             status_text = self.get_service_status(service)
-
             row = ctk.CTkFrame(self.services_frame)
             row.pack(fill="x", pady=2, padx=5)
 
@@ -128,15 +129,16 @@ class ServiceManagerApp(ctk.CTk):
             }
 
     def handle_action(self, service, action):
-        if action == "restart":
-            self.control_service(service, "stop")
+        def run():
+            if action == "restart":
+                self.control_service(service, "stop")
+                time.sleep(1)
+                self.control_service(service, "start")
+            else:
+                self.control_service(service, action)
             time.sleep(1)
-            self.control_service(service, "start")
-        else:
-            self.control_service(service, action)
-
-        time.sleep(1)
-        self.refresh_services()
+            self.refresh_services()
+        threading.Thread(target=run, daemon=True).start()
 
     def remove_service(self, name):
         self.services.remove(name)
@@ -144,20 +146,25 @@ class ServiceManagerApp(ctk.CTk):
         self.update_service_list()
 
     def refresh_services(self):
-        for service in self.services:
-            status = self.get_service_status(service)
-            widgets = self.service_widgets.get(service, {})
-            if widgets:
-                widgets["status"].configure(text=status)
-                widgets["dot"].configure(text_color=("green" if status == "Running" else "red" if status == "Stopped" else "gray"))
-                widgets["start_btn"].configure(state="disabled" if status == "Running" else "normal")
+        def safe_update():
+            for service in self.services:
+                status = self.get_service_status(service)
+                widgets = self.service_widgets.get(service, {})
+                if widgets:
+                    try:
+                        widgets["status"].configure(text=status)
+                        color = "green" if status == "Running" else ("red" if status == "Stopped" else "gray")
+                        widgets["dot"].configure(text_color=color)
+                        widgets["start_btn"].configure(state="disabled" if status == "Running" else "normal")
+                    except:
+                        pass
+        self.after(0, safe_update)
 
     def auto_refresh(self):
         def loop():
             while True:
                 self.refresh_services()
                 time.sleep(5)
-
         threading.Thread(target=loop, daemon=True).start()
 
     def create_tray_icon(self):
@@ -173,13 +180,13 @@ class ServiceManagerApp(ctk.CTk):
         self.tray_icon = pystray.Icon("ServiceManager", image, "Service Manager", menu)
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
-    def show_window(self):
+    def show_window(self, icon=None, item=None):
         self.after(0, self.deiconify)
 
     def hide_window(self):
         self.withdraw()
 
-    def exit_app(self):
+    def exit_app(self, icon=None, item=None):
         if hasattr(self, "tray_icon"):
             self.tray_icon.stop()
         self.destroy()
