@@ -4,6 +4,9 @@ import json
 import os
 import threading
 import time
+import pystray
+from pystray import MenuItem as item
+from PIL import Image, ImageDraw
 
 SERVICES_FILE = os.path.join(os.getenv("LOCALAPPDATA"), "ServiceManager", "services.json")
 
@@ -11,7 +14,7 @@ class ServiceManagerApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Service Manager")
-        self.geometry("500x400")
+        self.geometry("540x460")
         ctk.set_appearance_mode("system")
 
         self.services = []
@@ -22,20 +25,24 @@ class ServiceManagerApp(ctk.CTk):
         self.refresh_services()
         self.auto_refresh()
 
+        # Set up tray behavior
+        self.protocol("WM_DELETE_WINDOW", self.hide_window)
+        self.create_tray_icon()
+
     def create_widgets(self):
         self.entry = ctk.CTkEntry(self, placeholder_text="Enter service name")
-        self.entry.pack(pady=10)
+        self.entry.pack(pady=10, padx=10, fill="x")
 
         self.add_btn = ctk.CTkButton(self, text="Add Service", command=self.add_service)
-        self.add_btn.pack()
+        self.add_btn.pack(pady=5)
 
         self.services_frame = ctk.CTkScrollableFrame(self)
-        self.services_frame.pack(expand=True, fill="both", pady=10)
+        self.services_frame.pack(expand=True, fill="both", pady=10, padx=10)
 
     def load_services(self):
         if os.path.exists(SERVICES_FILE):
             with open(SERVICES_FILE, "r") as f:
-                self.services = json.load(f)
+                self.services = sorted(json.load(f))
         self.update_service_list()
 
     def save_services(self):
@@ -47,6 +54,7 @@ class ServiceManagerApp(ctk.CTk):
         name = self.entry.get().strip()
         if name and name not in self.services:
             self.services.append(name)
+            self.services.sort()
             self.save_services()
             self.entry.delete(0, 'end')
             self.update_service_list()
@@ -68,48 +76,56 @@ class ServiceManagerApp(ctk.CTk):
         try:
             subprocess.run(["sc", action, name], check=True, capture_output=True)
         except subprocess.CalledProcessError:
-            # Properly quote the whole argument string passed to sc
-            cmd = f'Start-Process -FilePath sc.exe -ArgumentList \'{action} "{name}"\' -Verb RunAs'
-            subprocess.run(["powershell", "-Command", cmd])
-
+            subprocess.run([
+                "powershell", "Start-Process", "sc",
+                "-ArgumentList", f'{action} "{name}"',
+                "-Verb", "RunAs"
+            ])
 
     def update_service_list(self):
         for widget in self.services_frame.winfo_children():
             widget.destroy()
 
+        self.service_widgets.clear()
+
         for service in self.services:
+            status_text = self.get_service_status(service)
+
             row = ctk.CTkFrame(self.services_frame)
             row.pack(fill="x", pady=2, padx=5)
 
             name = ctk.CTkLabel(row, text=service, width=100, anchor="w")
             name.pack(side="left")
 
-            status_text = self.get_service_status(service)
+            dot_color = "green" if status_text == "Running" else ("red" if status_text == "Stopped" else "gray")
+            dot = ctk.CTkLabel(row, text="●", text_color=dot_color, width=10)
+            dot.pack(side="left", padx=(0, 4))
+
             status = ctk.CTkLabel(row, text=status_text, width=80)
             status.pack(side="left", padx=5)
-            self.service_widgets[service] = status
 
-            # Create buttons and disable based on status
             start_btn = ctk.CTkButton(row, text="Start", width=60,
                                       command=lambda s=service: self.handle_action(s, "start"))
+            start_btn.pack(side="left", padx=2)
+            start_btn.configure(state="disabled" if status_text == "Running" else "normal")
+
             stop_btn = ctk.CTkButton(row, text="Stop", width=60,
                                      command=lambda s=service: self.handle_action(s, "stop"))
+            stop_btn.pack(side="left", padx=2)
+
             restart_btn = ctk.CTkButton(row, text="Restart", width=60,
                                         command=lambda s=service: self.handle_action(s, "restart"))
-
-            if status_text == "Running":
-                start_btn.configure(state="disabled")
-            elif status_text == "Stopped":
-                stop_btn.configure(state="disabled")
-
-            start_btn.pack(side="left", padx=2)
-            stop_btn.pack(side="left", padx=2)
             restart_btn.pack(side="left", padx=2)
 
             del_btn = ctk.CTkButton(row, text="❌", width=30, fg_color="red",
                                     command=lambda s=service: self.remove_service(s))
             del_btn.pack(side="left")
 
+            self.service_widgets[service] = {
+                "status": status,
+                "dot": dot,
+                "start_btn": start_btn
+            }
 
     def handle_action(self, service, action):
         if action == "restart":
@@ -118,6 +134,8 @@ class ServiceManagerApp(ctk.CTk):
             self.control_service(service, "start")
         else:
             self.control_service(service, action)
+
+        time.sleep(1)
         self.refresh_services()
 
     def remove_service(self, name):
@@ -126,21 +144,13 @@ class ServiceManagerApp(ctk.CTk):
         self.update_service_list()
 
     def refresh_services(self):
-        for child in self.services_frame.winfo_children():
-            for widget in child.winfo_children():
-                if isinstance(widget, ctk.CTkLabel) and widget.cget("width") == 80:
-                    service = widget.master.winfo_children()[0].cget("text")
-                    new_status = self.get_service_status(service)
-                    widget.configure(text=new_status)
-    
-                    # Enable/disable buttons
-                    for btn in widget.master.winfo_children():
-                        if isinstance(btn, ctk.CTkButton):
-                            if btn.cget("text") == "Start":
-                                btn.configure(state="disabled" if new_status == "Running" else "normal")
-                            elif btn.cget("text") == "Stop":
-                                btn.configure(state="disabled" if new_status == "Stopped" else "normal")
-
+        for service in self.services:
+            status = self.get_service_status(service)
+            widgets = self.service_widgets.get(service, {})
+            if widgets:
+                widgets["status"].configure(text=status)
+                widgets["dot"].configure(text_color=("green" if status == "Running" else "red" if status == "Stopped" else "gray"))
+                widgets["start_btn"].configure(state="disabled" if status == "Running" else "normal")
 
     def auto_refresh(self):
         def loop():
@@ -148,8 +158,32 @@ class ServiceManagerApp(ctk.CTk):
                 self.refresh_services()
                 time.sleep(5)
 
-        t = threading.Thread(target=loop, daemon=True)
-        t.start()
+        threading.Thread(target=loop, daemon=True).start()
+
+    def create_tray_icon(self):
+        image = Image.new("RGB", (64, 64), (255, 255, 255))
+        draw = ImageDraw.Draw(image)
+        draw.ellipse((16, 16, 48, 48), fill="black")
+
+        menu = (
+            item("Show", self.show_window),
+            item("Exit", self.exit_app)
+        )
+
+        self.tray_icon = pystray.Icon("ServiceManager", image, "Service Manager", menu)
+        threading.Thread(target=self.tray_icon.run, daemon=True).start()
+
+    def show_window(self):
+        self.after(0, self.deiconify)
+
+    def hide_window(self):
+        self.withdraw()
+
+    def exit_app(self):
+        if hasattr(self, "tray_icon"):
+            self.tray_icon.stop()
+        self.destroy()
+
 
 if __name__ == "__main__":
     app = ServiceManagerApp()
